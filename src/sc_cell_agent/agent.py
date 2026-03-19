@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Protocol
 
 from .config import AgentConfig
+from .documentation import ToolDocumentation
 from .memory import AnalysisState, StateStore
 from .planner import MetadataInspector, ReviewBundle, ReviewDecision, ReviewEngine, ToolRegistry
 from .prompts import PromptBuilder
@@ -51,18 +52,24 @@ class CellAnalysisAgent:
         self.executor = executor
         self.vision_client = vision_client
         self.registry = ToolRegistry()
+        self.config.ensure_directories()
+        self.tool_docs = ToolDocumentation(config.tool_doc_path)
         self.review_engine = ReviewEngine(
             max_technical_retries=config.max_technical_retries,
             max_hypothesis_retries=config.max_hypothesis_retries,
         )
         self.report_writer = ReportWriter()
         self.state_store = StateStore(config.state_path)
-        self.config.ensure_directories()
 
-    def bootstrap_tools(self) -> None:
-        self.registry.register("json", ["loads", "dumps"])
-        self.registry.register("pathlib", ["Path"])
-        self.registry.register("math", ["sqrt", "log1p"])
+    def bootstrap_tools(self) -> list[str]:
+        self.registry.register("json", ["loads", "dumps"], "读写 JSON 状态和分析摘要。")
+        self.registry.register("pathlib", ["Path"], "管理输出目录和文件路径。")
+        self.registry.register("math", ["sqrt", "log1p"], "提供基础数学计算。")
+        return self.sync_tool_documentation()
+
+    def sync_tool_documentation(self) -> list[str]:
+        missing_packages = self.tool_docs.ensure_entries(self.registry.doc_entries())
+        return missing_packages
 
     def initialize_state(
         self,
@@ -75,6 +82,7 @@ class CellAnalysisAgent:
         sample_notes: list[str] | None = None,
     ) -> AnalysisState:
         state = self.state_store.load()
+        missing_docs = self.sync_tool_documentation()
         state.background_summary = {"background_text": background_text}
         state.dataset_summary = MetadataInspector.summarize(
             obs_columns=obs_columns,
@@ -85,6 +93,10 @@ class CellAnalysisAgent:
             sample_notes=sample_notes,
         )
         state.available_tools = self.registry.snapshot()
+        if missing_docs:
+            state.technical_findings.append(
+                f"自动补充 Tool Documentation: {', '.join(sorted(missing_docs))}"
+            )
         self.state_store.save(state)
         return state
 
@@ -107,6 +119,7 @@ class CellAnalysisAgent:
         return plan
 
     def generate_step_code(self, task_name: str, state: AnalysisState) -> str:
+        self.sync_tool_documentation()
         prompt = PromptBuilder.build_code_prompt(
             task_name=task_name,
             state_summary={
@@ -115,7 +128,7 @@ class CellAnalysisAgent:
                 "available_tools": state.available_tools,
                 "generated_files": state.generated_files,
             },
-            tool_reference=self.registry.as_prompt_text(),
+            tool_reference=self.tool_docs.as_text(),
         )
         return self.llm_client.generate(prompt)
 
@@ -195,10 +208,12 @@ class CellAnalysisAgent:
         self.state_store.remember_file(state, "technical_report", tech)
         self.state_store.remember_file(state, "analysis_report", analysis)
         self.state_store.remember_file(state, "manuscript", manuscript)
+        self.state_store.remember_file(state, "tool_documentation", self.config.tool_doc_path)
         return {
             "technical_report": tech,
             "analysis_report": analysis,
             "manuscript": manuscript,
+            "tool_documentation": self.config.tool_doc_path,
         }
 
     def state_snapshot(self, state: AnalysisState) -> dict[str, object]:

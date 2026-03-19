@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from .documentation import ToolDocEntry
+
 
 @dataclass(slots=True)
 class ReviewDecision:
@@ -47,16 +49,20 @@ class ReviewEngine:
 
 class ToolRegistry:
     def __init__(self) -> None:
-        self._tools: dict[str, list[str]] = {}
+        self._tools: dict[str, ToolDocEntry] = {}
 
-    def register(self, package: str, symbols: list[str]) -> None:
-        self._tools[package] = symbols
+    def register(self, package: str, symbols: list[str], description: str = "") -> None:
+        self._tools[package] = ToolDocEntry(
+            package=package,
+            symbols=symbols,
+            description=description or f"Registered tool package {package}.",
+        )
 
     def as_prompt_text(self) -> str:
         lines: list[str] = []
-        for package, symbols in sorted(self._tools.items()):
-            symbol_text = ", ".join(symbols)
-            lines.append(f"- {package}: {symbol_text}")
+        for package, entry in sorted(self._tools.items()):
+            symbol_text = ", ".join(entry.symbols)
+            lines.append(f"- {package}: {symbol_text} | {entry.description}")
         return "\n".join(lines)
 
     @property
@@ -64,7 +70,10 @@ class ToolRegistry:
         return set(self._tools)
 
     def snapshot(self) -> dict[str, list[str]]:
-        return dict(self._tools)
+        return {package: entry.symbols for package, entry in self._tools.items()}
+
+    def doc_entries(self) -> list[ToolDocEntry]:
+        return list(self._tools.values())
 
 
 class MetadataInspector:

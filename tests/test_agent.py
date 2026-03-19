@@ -2,6 +2,7 @@ from pathlib import Path
 
 from sc_cell_agent.agent import CellAnalysisAgent, LocalPythonExecutor
 from sc_cell_agent.config import AgentConfig
+from sc_cell_agent.documentation import ToolDocumentation
 from sc_cell_agent.planner import ReviewEngine
 from sc_cell_agent.validator import CodeValidator
 
@@ -44,7 +45,24 @@ def test_local_executor_runs_python() -> None:
     assert output == "ok"
 
 
-def test_agent_supports_planning_and_visual_review(tmp_path: Path) -> None:
+def test_tool_documentation_auto_appends_missing_tools(tmp_path: Path) -> None:
+    config = AgentConfig(project_root=tmp_path)
+    doc = ToolDocumentation(config.tool_doc_path)
+    agent = CellAnalysisAgent(
+        config=config,
+        llm_client=DummyLLM(),
+        executor=LocalPythonExecutor(),
+    )
+    agent.registry.register("scanpy", ["pp", "tl", "pl"], "单细胞预处理、分析和可视化。")
+    missing = agent.sync_tool_documentation()
+    content = doc.as_text()
+
+    assert missing == ["scanpy"]
+    assert "## scanpy" in content
+    assert "单细胞预处理、分析和可视化。" in content
+
+
+def test_agent_supports_planning_visual_review_and_tool_docs(tmp_path: Path) -> None:
     config = AgentConfig(project_root=tmp_path)
     image_path = tmp_path / "plot.png"
     image_path.write_text("fake image placeholder", encoding="utf-8")
@@ -55,7 +73,7 @@ def test_agent_supports_planning_and_visual_review(tmp_path: Path) -> None:
         executor=LocalPythonExecutor(),
         vision_client=DummyVision(),
     )
-    agent.bootstrap_tools()
+    missing = agent.bootstrap_tools()
     state = agent.initialize_state(
         background_text="肺癌单细胞数据",
         obs_columns=["cell_type", "batch"],
@@ -72,8 +90,12 @@ def test_agent_supports_planning_and_visual_review(tmp_path: Path) -> None:
     state.biological_findings.append("发现潜在的肿瘤相关免疫亚群")
     outputs = agent.finalize_outputs(state)
 
+    assert sorted(missing) == ["json", "math", "pathlib"]
+    assert config.tool_doc_path.exists()
+    assert "json" in config.tool_doc_path.read_text(encoding="utf-8")
     assert "假设1" in plan
     assert "visual_ok" in visual
     assert outputs["technical_report"].exists()
     assert outputs["analysis_report"].exists()
     assert outputs["manuscript"].exists()
+    assert outputs["tool_documentation"].exists()

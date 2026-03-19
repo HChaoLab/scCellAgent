@@ -43,6 +43,10 @@ class AgentConfig:
     def state_path(self) -> Path:
         return self.output_dir / "state.json"
 
+    @property
+    def tool_doc_path(self) -> Path:
+        return self.output_dir / "tool_documentation.md"
+
     def ensure_directories(self) -> None:
         for path in [
             self.output_dir,
