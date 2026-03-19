@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from sc_cell_agent.agent import CellAnalysisAgent
+from sc_cell_agent.agent import CellAnalysisAgent, LocalPythonExecutor
 from sc_cell_agent.config import AgentConfig
 from sc_cell_agent.planner import ReviewEngine
 from sc_cell_agent.validator import CodeValidator
@@ -9,15 +9,15 @@ from sc_cell_agent.validator import CodeValidator
 class DummyLLM:
     def generate(self, prompt: str) -> str:
         if "最小任务" in prompt:
-            return "import math\nvalue = math.sqrt(4)"
+            return "import math\nvalue = math.sqrt(4)\nprint(value)"
+        if "分析假设" in prompt:
+            return "假设1: 存在应激相关免疫亚群\n步骤1: QC"
         return "- 一致点: 背景和数据都提到了细胞元数据"
 
 
-class DummyExecutor:
-    def run_python(self, code: str) -> tuple[bool, str]:
-        namespace: dict[str, object] = {}
-        exec(code, {}, namespace)
-        return True, str(namespace)
+class DummyVision:
+    def review_image(self, prompt: str, image_path: Path) -> str:
+        return f'{{"visual_ok": true, "issues": [], "suggestions": ["继续沿用当前配色"], "image": "{image_path.name}"}}'
 
 
 def test_validator_blocks_unknown_variable() -> None:
@@ -31,13 +31,30 @@ def test_review_engine_routes_retry_types() -> None:
     engine = ReviewEngine(max_technical_retries=2, max_hypothesis_retries=1)
     technical = engine.decide(False, True, technical_retry_count=0, hypothesis_retry_count=0)
     biological = engine.decide(True, False, technical_retry_count=0, hypothesis_retry_count=0)
+    visual = engine.decide(True, True, technical_retry_count=0, hypothesis_retry_count=0, visual_ok=False)
     assert technical.status == "retry_technical"
     assert biological.status == "retry_hypothesis"
+    assert visual.status == "retry_technical"
 
 
-def test_agent_bootstrap_and_finalize(tmp_path: Path) -> None:
+def test_local_executor_runs_python() -> None:
+    executor = LocalPythonExecutor()
+    ok, output = executor.run_python("print('ok')")
+    assert ok is True
+    assert output == "ok"
+
+
+def test_agent_supports_planning_and_visual_review(tmp_path: Path) -> None:
     config = AgentConfig(project_root=tmp_path)
-    agent = CellAnalysisAgent(config=config, llm_client=DummyLLM(), executor=DummyExecutor())
+    image_path = tmp_path / "plot.png"
+    image_path.write_text("fake image placeholder", encoding="utf-8")
+
+    agent = CellAnalysisAgent(
+        config=config,
+        llm_client=DummyLLM(),
+        executor=LocalPythonExecutor(),
+        vision_client=DummyVision(),
+    )
     agent.bootstrap_tools()
     state = agent.initialize_state(
         background_text="肺癌单细胞数据",
@@ -46,11 +63,17 @@ def test_agent_bootstrap_and_finalize(tmp_path: Path) -> None:
         uns_keys=["neighbors"],
         n_obs=100,
         n_vars=500,
+        sample_notes=["包含治疗前后样本"],
     )
+    plan = agent.plan_analysis("肺癌单细胞数据", state, ["免疫微环境", "治疗前后差异"])
+    visual = agent.review_visual_output("umap", state, image_path)
     state.key_metrics["cells_after_qc"] = 80
     state.technical_findings.append("未发现语法错误")
     state.biological_findings.append("发现潜在的肿瘤相关免疫亚群")
     outputs = agent.finalize_outputs(state)
+
+    assert "假设1" in plan
+    assert "visual_ok" in visual
     assert outputs["technical_report"].exists()
     assert outputs["analysis_report"].exists()
     assert outputs["manuscript"].exists()

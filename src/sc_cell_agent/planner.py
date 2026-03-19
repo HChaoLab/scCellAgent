@@ -11,6 +11,14 @@ class ReviewDecision:
     next_action: str
 
 
+@dataclass(slots=True)
+class ReviewBundle:
+    technical_ok: bool
+    biological_ok: bool
+    visual_ok: bool
+    summary: str
+
+
 class ReviewEngine:
     def __init__(self, max_technical_retries: int, max_hypothesis_retries: int) -> None:
         self.max_technical_retries = max_technical_retries
@@ -22,18 +30,19 @@ class ReviewEngine:
         biological_ok: bool,
         technical_retry_count: int,
         hypothesis_retry_count: int,
+        visual_ok: bool = True,
     ) -> ReviewDecision:
-        if not technical_ok:
+        if not technical_ok or not visual_ok:
             if technical_retry_count >= self.max_technical_retries:
-                return ReviewDecision("stop", "技术迭代次数已达上限", "人工复核")
-            return ReviewDecision("retry_technical", "技术结果不合格", "修复代码并重跑")
+                return ReviewDecision("stop", "技术或视觉迭代次数已达上限", "人工复核")
+            return ReviewDecision("retry_technical", "技术结果或图形质量不合格", "修复代码并重跑")
 
         if not biological_ok:
             if hypothesis_retry_count >= self.max_hypothesis_retries:
                 return ReviewDecision("stop", "假设迭代次数已达上限", "人工复核")
             return ReviewDecision("retry_hypothesis", "生物学解释不充分", "调整假设与分析重点")
 
-        return ReviewDecision("accept", "技术和生物学评价均通过", "进入下一步")
+        return ReviewDecision("accept", "技术、视觉和生物学评价均通过", "进入下一步")
 
 
 class ToolRegistry:
@@ -66,6 +75,7 @@ class MetadataInspector:
         uns_keys: list[str],
         n_obs: int | None = None,
         n_vars: int | None = None,
+        sample_notes: list[str] | None = None,
     ) -> dict[str, Any]:
         return {
             "obs_columns": obs_columns,
@@ -73,4 +83,5 @@ class MetadataInspector:
             "uns_keys": uns_keys,
             "n_obs": n_obs,
             "n_vars": n_vars,
+            "sample_notes": sample_notes or [],
         }

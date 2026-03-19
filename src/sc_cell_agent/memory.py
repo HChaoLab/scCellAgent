@@ -13,10 +13,12 @@ class AnalysisState:
     completed_steps: list[str] = field(default_factory=list)
     technical_findings: list[str] = field(default_factory=list)
     biological_findings: list[str] = field(default_factory=list)
+    visual_findings: list[str] = field(default_factory=list)
     generated_files: dict[str, str] = field(default_factory=dict)
     available_tools: dict[str, list[str]] = field(default_factory=dict)
     key_metrics: dict[str, Any] = field(default_factory=dict)
     hypothesis_history: list[dict[str, Any]] = field(default_factory=list)
+    plan_history: list[dict[str, Any]] = field(default_factory=list)
 
 
 class StateStore:
@@ -38,4 +40,8 @@ class StateStore:
     def append_step(self, state: AnalysisState, step: str) -> None:
         if step not in state.completed_steps:
             state.completed_steps.append(step)
+        self.save(state)
+
+    def remember_file(self, state: AnalysisState, key: str, path: Path) -> None:
+        state.generated_files[key] = str(path)
         self.save(state)
