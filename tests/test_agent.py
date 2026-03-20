@@ -3,6 +3,8 @@ from pathlib import Path
 from sc_cell_agent.agent import CellAnalysisAgent, LocalPythonExecutor
 from sc_cell_agent.config import AgentConfig
 from sc_cell_agent.documentation import ToolDocumentation
+from sc_cell_agent.env import load_env_file
+from sc_cell_agent.minimax import MiniMaxSettings, MiniMaxTextClient, MiniMaxVisionClient
 from sc_cell_agent.planner import ReviewEngine
 from sc_cell_agent.prompts import PromptBuilder
 from sc_cell_agent.validator import CodeValidator
@@ -44,6 +46,37 @@ def test_local_executor_runs_python() -> None:
     ok, output = executor.run_python("print('ok')")
     assert ok is True
     assert output == "ok"
+
+
+def test_load_env_file_and_minimax_clients_from_env(tmp_path: Path) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "MINIMAX_API_KEY=test-key",
+                "MINIMAX_TEXT_MODEL=text-model",
+                "MINIMAX_VISION_MODEL=vision-model",
+                "MINIMAX_TEXT_API_URL=https://text.endpoint",
+                "MINIMAX_VISION_API_URL=https://vision.endpoint",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    image_path = tmp_path / "plot.png"
+    image_path.write_bytes(b"fake-image")
+
+    def fake_transport(url: str, headers: dict[str, str], payload: dict[str, object]) -> dict[str, str]:
+        return {"output_text": f"{url}|{payload['model']}|ok"}
+
+    loaded = load_env_file(env_path, override=True)
+    settings = MiniMaxSettings.from_env(env_path, override=True)
+    text_client = MiniMaxTextClient.from_env(env_path, override=True, transport=fake_transport)
+    vision_client = MiniMaxVisionClient.from_env(env_path, override=True, transport=fake_transport)
+
+    assert loaded["MINIMAX_API_KEY"] == "test-key"
+    assert settings.text_api_url == "https://text.endpoint"
+    assert text_client.generate("hello") == "https://text.endpoint|text-model|ok"
+    assert vision_client.review_image("look", image_path) == "https://vision.endpoint|vision-model|ok"
 
 
 def test_tool_documentation_auto_appends_missing_tools(tmp_path: Path) -> None:
