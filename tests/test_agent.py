@@ -4,6 +4,7 @@ from sc_cell_agent.agent import CellAnalysisAgent, LocalPythonExecutor
 from sc_cell_agent.config import AgentConfig
 from sc_cell_agent.documentation import ToolDocumentation
 from sc_cell_agent.planner import ReviewEngine
+from sc_cell_agent.prompts import PromptBuilder
 from sc_cell_agent.validator import CodeValidator
 
 
@@ -99,3 +100,22 @@ def test_agent_supports_planning_visual_review_and_tool_docs(tmp_path: Path) -> 
     assert outputs["analysis_report"].exists()
     assert outputs["manuscript"].exists()
     assert outputs["tool_documentation"].exists()
+
+
+def test_task_specific_prompt_templates_include_expected_constraints() -> None:
+    state_summary = {"dataset_summary": {"obs_columns": ["cell_type", "cluster"]}}
+    tool_reference = "## scanpy\n- symbols: pp, tl, pl"
+
+    qc_prompt = PromptBuilder.build_qc_prompt(state_summary, tool_reference)
+    clustering_prompt = PromptBuilder.build_clustering_prompt(state_summary, tool_reference)
+    de_prompt = PromptBuilder.build_differential_expression_prompt(state_summary, tool_reference)
+    annotation_prompt = PromptBuilder.build_cell_annotation_prompt(state_summary, tool_reference)
+
+    assert "质量控制（QC）" in qc_prompt
+    assert "过滤前后细胞数" in qc_prompt
+    assert "聚类分析" in clustering_prompt
+    assert "resolution" in clustering_prompt
+    assert "差异表达分析" in de_prompt
+    assert "多重检验校正" in de_prompt
+    assert "细胞注释" in annotation_prompt
+    assert "候选注释和不确定性说明" in annotation_prompt

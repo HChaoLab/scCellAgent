@@ -208,6 +208,24 @@ validation = agent.validate_code(code, state)
 
 如果 `validation.ok` 为 `False`，就不要运行，直接让模型根据报错修复。
 
+对于单细胞核心步骤，推荐直接使用独立 prompt 模板，而不是全部复用通用模板：
+
+```python
+from sc_cell_agent.prompts import PromptBuilder
+
+qc_prompt = PromptBuilder.build_qc_prompt(agent.state_snapshot(state), agent.tool_docs.as_text())
+clustering_prompt = PromptBuilder.build_clustering_prompt(agent.state_snapshot(state), agent.tool_docs.as_text())
+de_prompt = PromptBuilder.build_differential_expression_prompt(agent.state_snapshot(state), agent.tool_docs.as_text())
+annotation_prompt = PromptBuilder.build_cell_annotation_prompt(agent.state_snapshot(state), agent.tool_docs.as_text())
+```
+
+这 4 类模板分别强调：
+
+- **QC**：阈值、过滤前后统计、QC 图导出。
+- **聚类**：邻居图、降维、resolution、簇规模。
+- **差异表达**：比较组确认、统计方法、校正方式、结果表导出。
+- **细胞注释**：marker 证据、候选注释、不确定性说明。
+
 ### Step 7. 执行代码
 
 ```python
