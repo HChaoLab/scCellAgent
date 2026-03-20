@@ -37,6 +37,55 @@ src/sc_cell_agent/
 └── validator.py        # 幻觉防护与静态检查
 ```
 
+## 安装说明
+
+项目地址：`https://github.com/HChaoLab/scCellAgent`
+
+### 是否需要创建 conda 环境？
+
+**建议创建独立环境，但不是绝对强制。**
+
+原因是这个项目后续通常会接入：
+
+- `scanpy`
+- `anndata`
+- `numpy`
+- `pandas`
+- `matplotlib`
+- 以及可能的富集分析、批次校正、可视化相关依赖
+
+这些包在不同项目之间比较容易发生版本冲突，所以更推荐使用 **conda/mamba 环境** 单独管理。  
+如果你已经有一个干净的 Python 3.11 环境，也可以直接使用 `venv`。
+
+### 方式 1：推荐，使用 conda
+
+```bash
+git clone https://github.com/HChaoLab/scCellAgent.git
+cd scCellAgent
+conda create -n scCellAgent python=3.11 -y
+conda activate scCellAgent
+pip install -e .
+```
+
+### 方式 2：使用 venv
+
+```bash
+git clone https://github.com/HChaoLab/scCellAgent.git
+cd scCellAgent
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
+```
+
+### 安装后建议先检查
+
+```bash
+python -c "import sc_cell_agent; print('sc_cell_agent imported successfully')"
+pytest -q
+```
+
+如果后续你接入 `scanpy` 等单细胞库，建议再按你的分析需要补装依赖。
+
 ## 第一步：用 `.env` 管理 MiniMax API
 
 现在建议不要再手动 `export` 环境变量，而是在项目根目录放一个 `.env` 文件，让 Agent 自动读取。
