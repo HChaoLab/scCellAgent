@@ -33,19 +33,242 @@ src/sc_cell_agent/
 └── validator.py        # 幻觉防护与静态检查
 ```
 
-## 推荐工作流
+## 模型 API 配置
 
-1. 用户提交背景描述与数据路径。
-2. Agent 读取元数据并核对背景-数据一致性。
-3. Agent 同步已注册工具与 `Tool Documentation`，缺失项自动补充。
-4. Agent 根据重点关注内容生成分析计划与生物学假设。
-5. Agent 逐步请求模型产出小块代码。
-6. 本地执行 `validator` 拦截幻觉变量、危险导入、未注册 API。
-7. 用受控 Python 子进程执行代码，并把执行结果写入本地状态。
-8. 若产生关键图，调用 MiniMax 视觉模型做图形质量评审。
-9. 技术评价和生物学评价分别给出结论。
-10. 在设定次数内进行技术迭代或假设迭代。
-11. 生成标准化输出目录与多类报告。
+当前仓库已经把 **文本模型** 和 **视觉模型** 抽象为两个协议：
+
+- `LLMClient.generate(prompt: str) -> str`
+- `VisionClient.review_image(prompt: str, image_path: Path) -> str`
+
+你可以把 MiniMax 的 API 封装成这两个 client，然后注入到 `CellAnalysisAgent`。
+
+### 推荐环境变量
+
+建议使用环境变量管理模型配置，而不是把 API Key 写死在代码里：
+
+```bash
+export MINIMAX_API_KEY="your_api_key"
+export MINIMAX_BASE_URL="https://api.minimax.chat"
+export MINIMAX_TEXT_MODEL="MiniMax-Text"
+export MINIMAX_VISION_MODEL="MiniMax-Vision"
+```
+
+如果你的部署是私有网关或代理，只需要修改 `MINIMAX_BASE_URL`。
+
+### 推荐的客户端职责划分
+
+**文本客户端 `MiniMaxTextClient`** 应负责：
+
+- 读取 `MINIMAX_API_KEY`。
+- 组装文本请求。
+- 调用规划、核对、代码生成等 prompt。
+- 对 API 报错做重试和错误包装。
+
+**视觉客户端 `MiniMaxVisionClient`** 应负责：
+
+- 读取 `MINIMAX_API_KEY`。
+- 接收 `image_path`。
+- 把图像传给 MiniMax 视觉模型。
+- 返回结构化视觉评审结论，例如 `visual_ok / issues / suggestions`。
+
+### 建议的最小封装接口
+
+下面这个例子不是完整 SDK，只是告诉你接入点应该长什么样：
+
+```python
+from pathlib import Path
+import os
+
+
+class MiniMaxTextClient:
+    def __init__(self) -> None:
+        self.api_key = os.environ["MINIMAX_API_KEY"]
+        self.base_url = os.environ.get("MINIMAX_BASE_URL", "https://api.minimax.chat")
+        self.model = os.environ.get("MINIMAX_TEXT_MODEL", "MiniMax-Text")
+
+    def generate(self, prompt: str) -> str:
+        # 在这里调用真实 MiniMax 文本 API
+        raise NotImplementedError
+
+
+class MiniMaxVisionClient:
+    def __init__(self) -> None:
+        self.api_key = os.environ["MINIMAX_API_KEY"]
+        self.base_url = os.environ.get("MINIMAX_BASE_URL", "https://api.minimax.chat")
+        self.model = os.environ.get("MINIMAX_VISION_MODEL", "MiniMax-Vision")
+
+    def review_image(self, prompt: str, image_path: Path) -> str:
+        # 在这里调用真实 MiniMax 视觉 API
+        raise NotImplementedError
+```
+
+### Agent 初始化方式
+
+当你完成上面的 client 封装后，推荐像下面这样初始化：
+
+```python
+from pathlib import Path
+
+from sc_cell_agent import AgentConfig, CellAnalysisAgent, LocalPythonExecutor
+
+config = AgentConfig(project_root=Path("./project_run"))
+agent = CellAnalysisAgent(
+    config=config,
+    llm_client=MiniMaxTextClient(),
+    executor=LocalPythonExecutor(),
+    vision_client=MiniMaxVisionClient(),
+)
+```
+
+## 推荐 workflow
+
+下面是一个适合你目标的最小工作流。
+
+### Step 1. 准备输入
+
+你需要至少准备两类输入：
+
+1. **背景描述**：疾病、组织、实验设计、重点问题。
+2. **数据元信息**：`obs_columns`、`var_columns`、`uns_keys`、样本说明。
+
+例如：
+
+```python
+background_text = "肺癌治疗前后单细胞转录组数据，重点关注免疫微环境变化。"
+obs_columns = ["cell_type", "batch", "sample", "condition"]
+var_columns = ["gene_symbol"]
+uns_keys = ["neighbors"]
+sample_notes = ["包含治疗前与治疗后样本", "包含多个病人批次"]
+```
+
+### Step 2. 注册工具并自动补齐 Tool Documentation
+
+```python
+missing = agent.bootstrap_tools()
+```
+
+这一步会：
+
+- 注册当前允许模型使用的工具。
+- 检查这些工具是否已经存在于 `tool_documentation.md`。
+- 若缺失，则自动补写说明书。
+
+如果你要引入 `scanpy`、`anndata`、`pandas`，推荐在这里继续注册，并补充 description。
+
+### Step 3. 初始化状态
+
+```python
+state = agent.initialize_state(
+    background_text=background_text,
+    obs_columns=obs_columns,
+    var_columns=var_columns,
+    uns_keys=uns_keys,
+    n_obs=12000,
+    n_vars=22000,
+    sample_notes=sample_notes,
+)
+```
+
+这一步会把背景、数据概况、工具快照、本地说明书同步情况写进 `state.json`。
+
+### Step 4. 先做背景-数据核对
+
+```python
+alignment = agent.verify_alignment(background_text, state)
+```
+
+这里不要急着直接做分析，而要先确认：
+
+- 背景描述和数据字段是否一致。
+- 是否缺少关键分组列。
+- 是否存在重点关注但数据里没有的信息。
+
+### Step 5. 生成分析假设与分析计划
+
+```python
+plan = agent.plan_analysis(
+    background_text,
+    state,
+    focus_points=["免疫微环境", "治疗前后差异", "T 细胞亚群变化"],
+)
+```
+
+建议让模型先输出：
+
+- 2-4 条生物学假设。
+- 每一步分析任务的输入、输出、判定标准。
+- 潜在风险和限制。
+
+### Step 6. 按“小步骤”生成代码
+
+```python
+code = agent.generate_step_code("执行 QC 并输出 QC 图", state)
+validation = agent.validate_code(code, state)
+```
+
+如果 `validation.ok` 为 `False`，就不要运行，直接让模型根据报错修复。
+
+### Step 7. 执行代码
+
+```python
+ok, output = agent.execute_step("qc", code, state)
+```
+
+建议每一步都做到：
+
+- 代码尽量短小。
+- 只做一个动作。
+- 生成中间结果后立刻写入状态。
+
+### Step 8. 对关键图做视觉评审
+
+```python
+visual_review = agent.review_visual_output("umap", state, Path("output/plots/umap.png"))
+```
+
+MiniMax 视觉模型建议重点看：
+
+- 标签是否可读。
+- 颜色是否区分明确。
+- 图是否支持当前结论。
+- 图是否适合作为汇报/论文插图。
+
+### Step 9. 区分技术迭代和假设迭代
+
+```python
+decision = agent.review_step(
+    technical_ok=True,
+    biological_ok=False,
+    technical_retry_count=0,
+    hypothesis_retry_count=0,
+    visual_ok=True,
+)
+```
+
+推荐规则：
+
+- `technical_ok=False` 或 `visual_ok=False`：回到技术修复。
+- `biological_ok=False`：回到假设/规划层。
+- 两者都通过：进入下一分析步骤。
+
+### Step 10. 生成最终输出
+
+```python
+outputs = agent.finalize_outputs(state)
+```
+
+当前会生成并登记：
+
+- 技术报告
+- 分析报告
+- 论文草稿
+- Tool Documentation
+
+后续你可以继续扩展到：
+
+- `output/code/` 可复用脚本
+- `output/data/` 关键结果表与 `.h5ad`
+- `output/plots/` 的 `.png + .pdf`
 
 ## Tool Documentation 机制
 
